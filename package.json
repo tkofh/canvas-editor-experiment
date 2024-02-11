@@ -7,23 +7,27 @@
     "dev": "nuxt dev",
     "lint": "eslint .",
     "lint:fix": "eslint --fix .",
+    "format": "prettier --write .",
     "generate": "nuxt generate",
     "preview": "nuxt preview",
     "postinstall": "nuxt prepare"
   },
   "devDependencies": {
-    "@antfu/eslint-config": "^2.6.3",
-    "@nuxt/devtools": "latest",
+    "@antfu/eslint-config": "^2.6.4",
+    "@coily/vue": "^0.4.1",
+    "@nuxt/devtools": "^1.0.8",
     "@vueuse/core": "^10.7.2",
-    "@vueuse/nuxt": "^10.7.0",
+    "@vueuse/nuxt": "^10.7.2",
     "@xstate/vue": "^3.0.3",
+    "coily": "^0.4.1",
     "eslint": "^8.56.0",
     "eslint-config-prettier": "^9.1.0",
     "micro-math": "^0.10.0",
-    "nuxt": "^3.9.3",
-    "prettier": "^3.2.4",
-    "vue": "^3.4.15",
+    "nuxt": "^3.10.1",
+    "prettier": "^3.2.5",
+    "tickloop": "^0.5.0",
+    "vue": "^3.4.18",
     "vue-router": "^4.2.5",
-    "xstate": "^5.5.2"
+    "xstate": "^5.6.2"
   }
 }

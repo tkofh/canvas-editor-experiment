@@ -1,18 +1,21 @@
 <script lang="ts" setup>
 import { clamp, lerp, remap, roundTo } from 'micro-math'
+import { useSpring } from '@coily/vue'
 
 const props = withDefaults(
   defineProps<{
     width?: number
     height?: number
     contentFit?: 'cover' | 'contain'
+    origin?: number | { x: number; y: number }
     scrollSensitivity?: number
     minZoom?: number
     initialZoom?: number
     maxZoom?: number
   }>(),
   {
-    contentFit: 'contain',
+    contentFit: 'cover',
+    origin: 0.5,
     scrollSensitivity: 1,
     minZoom: 1,
     initialZoom: 1,
@@ -20,11 +23,10 @@ const props = withDefaults(
   },
 )
 
-const container = ref<HTMLDivElement | null>(null)
-
 const hidden = ref(true)
 onMounted(() => (hidden.value = false))
 
+const container = ref<HTMLDivElement | null>(null)
 const { width: containerWidth, height: containerHeight } = useElementSize(
   container,
   { width: 1, height: 1 }, // ensures we never divide by zero
@@ -32,8 +34,6 @@ const { width: containerWidth, height: containerHeight } = useElementSize(
 
 const contentWidth = computed(() => props.width ?? containerWidth.value)
 const contentHeight = computed(() => props.height ?? containerHeight.value)
-
-const minZoom = computed(() => Math.max(props.minZoom, 0.001))
 
 const containerScaleFactor = computed(() => {
   const widthScaleFactor = contentWidth.value / containerWidth.value
@@ -44,159 +44,183 @@ const containerScaleFactor = computed(() => {
     : Math.min(widthScaleFactor, heightScaleFactor)
 })
 
-const viewBoxWidth = computed(
+const intrinsicViewportWidth = computed(
   () => containerWidth.value * containerScaleFactor.value,
 )
-const viewBoxHeight = computed(
+const intrinsicViewportHeight = computed(
   () => containerHeight.value * containerScaleFactor.value,
 )
-const inverseViewBoxAspectRatio = computed(
-  () => viewBoxHeight.value / viewBoxWidth.value,
-)
-const shiftX = computed(() => (contentWidth.value - viewBoxWidth.value) * 0.5)
-const shiftY = computed(() => (contentHeight.value - viewBoxHeight.value) * 0.5)
-const halfViewBoxClippedX = computed(
-  () => (contentWidth.value - viewBoxWidth.value) * 0.5,
-)
-const halfViewBoxClippedY = computed(
-  () => (contentHeight.value - viewBoxHeight.value) * 0.5,
-)
-const inverseNormalizedViewBoxScrollScaleX = computed(
-  () => 1 - (halfViewBoxClippedX.value * 2) / viewBoxWidth.value,
-)
-const inverseNormalizedViewBoxScrollScaleY = computed(
-  () => 1 - (halfViewBoxClippedY.value * 2) / viewBoxHeight.value,
-)
 
-const normalizedPanX = ref(0)
-const normalizedPanY = ref(0)
+const minZoom = computed(() => Math.max(props.minZoom, 0.001))
 
-const zoom = ref(props.initialZoom)
-watch(
-  [minZoom, () => props.maxZoom],
-  ([min, max]) => {
-    zoom.value = clamp(zoom.value, min, max)
+const targetZoom = ref(props.initialZoom)
+
+watchEffect(
+  () => {
+    targetZoom.value = clamp(targetZoom.value, minZoom.value, props.maxZoom)
   },
-  { immediate: true },
+  { flush: 'sync' },
 )
 
-const inverseZoom = computed(() => 1 / zoom.value)
-const canScrollX = computed(
-  () => zoom.value > minZoom.value || halfViewBoxClippedX.value > 0,
-)
-const canScrollY = computed(
-  () => zoom.value > minZoom.value || halfViewBoxClippedY.value > 0,
+const springConfig = {
+  friction: 10,
+  mass: 0.05,
+  tension: 400,
+} as const
+
+const { current: currentZoom, state: zoomState } = useSpring(
+  targetZoom,
+  springConfig,
 )
 
-watch(canScrollX, (canScroll) => {
-  if (!canScroll) {
-    normalizedPanX.value = 0
-  }
+const inverseZoom = computed(() => 1 / currentZoom.value)
+
+const viewportWidth = computed(
+  () => intrinsicViewportWidth.value * inverseZoom.value,
+)
+const viewportHeight = computed(
+  () => intrinsicViewportHeight.value * inverseZoom.value,
+)
+
+const maxPanX = computed(
+  () =>
+    (Math.max(contentWidth.value - intrinsicViewportWidth.value, 0) +
+      (intrinsicViewportWidth.value - viewportWidth.value)) /
+    intrinsicViewportWidth.value,
+)
+const maxPanY = computed(
+  () =>
+    (Math.max(contentHeight.value - intrinsicViewportHeight.value, 0) +
+      (intrinsicViewportHeight.value - viewportHeight.value)) /
+    intrinsicViewportHeight.value,
+)
+
+const targetPanX = ref(0)
+const targetPanY = ref(0)
+
+watchEffect(
+  () => {
+    targetPanX.value = clamp(targetPanX.value, -maxPanX.value, maxPanX.value)
+  },
+  { flush: 'sync' },
+)
+
+watchEffect(
+  () => {
+    targetPanY.value = clamp(targetPanY.value, -maxPanY.value, maxPanY.value)
+  },
+  { flush: 'sync' },
+)
+
+const { current: currentPanX } = useSpring(targetPanX, springConfig)
+const { current: currentPanY } = useSpring(targetPanY, springConfig)
+
+const normalizedPointerX = ref(0)
+const normalizedPointerY = ref(0)
+
+const panXZoomAdjustment = computed(() =>
+  zoomState.value === 'resting' ? 0 : targetPanX.value - currentPanX.value,
+)
+const panYZoomAdjustment = computed(() =>
+  zoomState.value === 'resting' ? 0 : targetPanY.value - currentPanY.value,
+)
+
+watch(inverseZoom, (inverseZoom, prevInverseZoom) => {
+  const deltaInverseZoom = prevInverseZoom - inverseZoom
+  targetPanX.value += lerp(
+    normalizedPointerX.value,
+    -deltaInverseZoom,
+    deltaInverseZoom,
+  )
+  targetPanY.value += lerp(
+    normalizedPointerY.value,
+    -deltaInverseZoom,
+    deltaInverseZoom,
+  )
 })
-watch(canScrollY, (canScroll) => {
-  if (!canScroll) {
-    normalizedPanY.value = 0
-  }
-})
 
+const adjustedPanX = computed(() =>
+  clamp(
+    currentPanX.value + panXZoomAdjustment.value,
+    -maxPanX.value,
+    maxPanX.value,
+  ),
+)
+const adjustedPanY = computed(() =>
+  clamp(
+    currentPanY.value + panYZoomAdjustment.value,
+    -maxPanY.value,
+    maxPanY.value,
+  ),
+)
+
+const originX = computed(() =>
+  typeof props.origin === 'object' ? props.origin.x : props.origin,
+)
+const originY = computed(() =>
+  typeof props.origin === 'object' ? props.origin.y : props.origin,
+)
+const viewportOriginX = computed(
+  () =>
+    intrinsicViewportWidth.value * originX.value +
+    (contentWidth.value - intrinsicViewportWidth.value) * 0.5,
+)
+const viewportOriginY = computed(
+  () =>
+    intrinsicViewportHeight.value * originY.value +
+    (contentHeight.value - intrinsicViewportHeight.value) * 0.5,
+)
+
+const viewBoxCenterX = computed(
+  () => adjustedPanX.value * intrinsicViewportWidth.value * 0.5,
+)
+const viewBoxCenterY = computed(
+  () => adjustedPanY.value * intrinsicViewportHeight.value * 0.5,
+)
+
+// the viewBox is the string representation of the current viewbox
 const viewBox = computed(() => {
-  const boxWidth = viewBoxWidth.value * inverseZoom.value
-  const boxHeight = viewBoxHeight.value * inverseZoom.value
+  const viewBoxX =
+    viewportOriginX.value + viewBoxCenterX.value - viewportWidth.value * 0.5
+  const viewBoxY =
+    viewportOriginY.value + viewBoxCenterY.value - viewportHeight.value * 0.5
 
-  const viewX = remap(
-    normalizedPanX.value,
-    -1,
-    1,
-    -halfViewBoxClippedX.value,
-    viewBoxWidth.value + halfViewBoxClippedX.value - boxWidth,
-    false,
-  )
-  const viewY = remap(
-    normalizedPanY.value,
-    -1,
-    1,
-    -halfViewBoxClippedY.value,
-    viewBoxHeight.value + halfViewBoxClippedY.value - boxHeight,
-    false,
-  )
-
-  return `${roundTo(viewX + shiftX.value, 4)} ${roundTo(viewY + shiftY.value, 4)} ${roundTo(boxWidth, 4)} ${roundTo(boxHeight, 4)}`
+  return `${roundTo(viewBoxX, 4)} ${roundTo(viewBoxY, 4)} ${roundTo(viewportWidth.value, 4)} ${roundTo(viewportHeight.value, 4)}`
 })
 
-const scrollZoomScalar = computed(() =>
-  lerp(0.25, inverseZoom.value ** 2, inverseZoom.value),
+const inverseViewBoxAspectRatio = computed(
+  () => intrinsicViewportHeight.value / intrinsicViewportWidth.value,
 )
-const scrollScalarX = computed(() => {
-  if (canScrollX.value) {
-    return (
-      0.0025 *
-      props.scrollSensitivity *
-      scrollZoomScalar.value *
-      inverseNormalizedViewBoxScrollScaleX.value *
-      inverseViewBoxAspectRatio.value
-    )
-  }
 
-  return 0
+const deltaScrollScalar = computed(() => {
+  const range = props.maxZoom - minZoom.value
+  return (
+    remap(currentZoom.value, minZoom.value, props.maxZoom, 1, range) * -0.0075
+  )
 })
-const scrollScalarY = computed(() => {
-  if (canScrollY.value) {
-    return (
-      0.0025 *
-      props.scrollSensitivity *
-      scrollZoomScalar.value *
-      inverseNormalizedViewBoxScrollScaleY.value
-    )
-  }
-
-  return 0
-})
+const deltaPanScalarX = computed(
+  () =>
+    0.001 *
+    props.scrollSensitivity *
+    inverseZoom.value *
+    inverseViewBoxAspectRatio.value,
+)
+const deltaPanScalarY = computed(
+  () => 0.001 * props.scrollSensitivity * inverseZoom.value,
+)
 
 function wheelHandler(event: WheelEvent) {
   event.preventDefault()
 
   if (event.ctrlKey) {
-    const deltaZoom = event.deltaY * -0.01
-    zoom.value = clamp(zoom.value + deltaZoom, minZoom.value, props.maxZoom)
+    targetZoom.value = targetZoom.value + event.deltaY * deltaScrollScalar.value
 
-    const normalizedPointerX = remap(
-      event.offsetX,
-      0,
-      containerWidth.value,
-      -1,
-      1,
-    )
-    const normalizedPointerY = remap(
-      event.offsetY,
-      0,
-      containerHeight.value,
-      -1,
-      1,
-    )
-
-    normalizedPanX.value = clamp(
-      normalizedPanX.value +
-        (normalizedPointerX - normalizedPanX.value) * inverseZoom.value,
-      -1,
-      1,
-    )
-    normalizedPanY.value = clamp(
-      normalizedPanY.value +
-        (normalizedPointerY - normalizedPanY.value) * inverseZoom.value,
-      -1,
-      1,
-    )
+    normalizedPointerX.value = event.offsetX / containerWidth.value
+    normalizedPointerY.value = event.offsetY / containerHeight.value
   } else {
-    normalizedPanX.value = clamp(
-      normalizedPanX.value + event.deltaX * scrollScalarX.value,
-      -1,
-      1,
-    )
-    normalizedPanY.value = clamp(
-      normalizedPanY.value + event.deltaY * scrollScalarY.value,
-      -1,
-      1,
-    )
+    targetPanX.value = targetPanX.value + event.deltaX * deltaPanScalarX.value
+
+    targetPanY.value = targetPanY.value + event.deltaY * deltaPanScalarY.value
   }
 }
 </script>
