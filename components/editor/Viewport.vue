@@ -12,6 +12,8 @@ const props = withDefaults(
     minZoom?: number
     initialZoom?: number
     maxZoom?: number
+    maxBounds?: number | { x: number; y: number }
+    // overscrollElasticity?: number
   }>(),
   {
     contentFit: 'cover',
@@ -20,6 +22,8 @@ const props = withDefaults(
     minZoom: 1,
     initialZoom: 1,
     maxZoom: 5,
+    maxBounds: 1,
+    // overscrollElasticity: 1,
   },
 )
 
@@ -54,23 +58,29 @@ const intrinsicViewportHeight = computed(
 const minZoom = computed(() => Math.max(props.minZoom, 0.001))
 
 const targetZoom = ref(props.initialZoom)
-
-watchEffect(
-  () => {
-    targetZoom.value = clamp(targetZoom.value, minZoom.value, props.maxZoom)
+watch(
+  [minZoom, () => props.maxZoom],
+  ([minZoom, maxZoom]) => {
+    targetZoom.value = clamp(targetZoom.value, minZoom, maxZoom)
   },
   { flush: 'sync' },
 )
 
-const springConfig = {
+const interactionSpringConfig = {
   friction: 10,
   mass: 0.05,
-  tension: 400,
+  tension: 500,
 } as const
+
+// const overpanSpringConfig = {
+//   friction: 400,
+//   mass: 15,
+//   tension: 3000,
+// } as const
 
 const { current: currentZoom, state: zoomState } = useSpring(
   targetZoom,
-  springConfig,
+  interactionSpringConfig,
 )
 
 const inverseZoom = computed(() => 1 / currentZoom.value)
@@ -84,13 +94,27 @@ const viewportHeight = computed(
 
 const maxPanX = computed(
   () =>
-    (Math.max(contentWidth.value - intrinsicViewportWidth.value, 0) +
+    (Math.max(
+      contentWidth.value *
+        (typeof props.maxBounds === 'object'
+          ? props.maxBounds.x
+          : props.maxBounds) -
+        intrinsicViewportWidth.value,
+      0,
+    ) +
       (intrinsicViewportWidth.value - viewportWidth.value)) /
     intrinsicViewportWidth.value,
 )
 const maxPanY = computed(
   () =>
-    (Math.max(contentHeight.value - intrinsicViewportHeight.value, 0) +
+    (Math.max(
+      contentHeight.value *
+        (typeof props.maxBounds === 'object'
+          ? props.maxBounds.y
+          : props.maxBounds) -
+        intrinsicViewportHeight.value,
+      0,
+    ) +
       (intrinsicViewportHeight.value - viewportHeight.value)) /
     intrinsicViewportHeight.value,
 )
@@ -98,22 +122,32 @@ const maxPanY = computed(
 const targetPanX = ref(0)
 const targetPanY = ref(0)
 
-watchEffect(
+watch(
+  maxPanX,
   () => {
     targetPanX.value = clamp(targetPanX.value, -maxPanX.value, maxPanX.value)
   },
   { flush: 'sync' },
 )
-
-watchEffect(
+watch(
+  maxPanY,
   () => {
     targetPanY.value = clamp(targetPanY.value, -maxPanY.value, maxPanY.value)
   },
   { flush: 'sync' },
 )
 
-const { current: currentPanX } = useSpring(targetPanX, springConfig)
-const { current: currentPanY } = useSpring(targetPanY, springConfig)
+// const { current: currentOverpanX, target: targetOverpanX } = useSpring(
+//   0,
+//   overpanSpringConfig,
+// )
+// const { current: currentOverpanY, target: targetOverpanY } = useSpring(
+//   0,
+//   overpanSpringConfig,
+// )
+
+const { current: currentPanX } = useSpring(targetPanX, interactionSpringConfig)
+const { current: currentPanY } = useSpring(targetPanY, interactionSpringConfig)
 
 const normalizedPointerX = ref(0)
 const normalizedPointerY = ref(0)
@@ -125,33 +159,31 @@ const panYZoomAdjustment = computed(() =>
   zoomState.value === 'resting' ? 0 : targetPanY.value - currentPanY.value,
 )
 
-watch(inverseZoom, (inverseZoom, prevInverseZoom) => {
-  const deltaInverseZoom = prevInverseZoom - inverseZoom
-  targetPanX.value += lerp(
-    normalizedPointerX.value,
-    -deltaInverseZoom,
-    deltaInverseZoom,
-  )
-  targetPanY.value += lerp(
-    normalizedPointerY.value,
-    -deltaInverseZoom,
-    deltaInverseZoom,
-  )
-})
-
-const adjustedPanX = computed(() =>
-  clamp(
-    currentPanX.value + panXZoomAdjustment.value,
-    -maxPanX.value,
-    maxPanX.value,
-  ),
+watch(
+  inverseZoom,
+  (inverseZoom, prevInverseZoom) => {
+    const deltaInverseZoom = prevInverseZoom - inverseZoom
+    targetPanX.value += lerp(
+      normalizedPointerX.value,
+      -deltaInverseZoom,
+      deltaInverseZoom,
+    )
+    targetPanY.value += lerp(
+      normalizedPointerY.value,
+      -deltaInverseZoom,
+      deltaInverseZoom,
+    )
+  },
+  { flush: 'sync' },
 )
-const adjustedPanY = computed(() =>
-  clamp(
-    currentPanY.value + panYZoomAdjustment.value,
-    -maxPanY.value,
-    maxPanY.value,
-  ),
+
+const adjustedPanX = computed(
+  () => currentPanX.value + panXZoomAdjustment.value, // +
+  // (targetOverpanX.value - currentOverpanX.value),
+)
+const adjustedPanY = computed(
+  () => currentPanY.value + panYZoomAdjustment.value, // +
+  // (targetOverpanY.value - currentOverpanY.value),
 )
 
 const originX = computed(() =>
@@ -178,7 +210,7 @@ const viewBoxCenterY = computed(
   () => adjustedPanY.value * intrinsicViewportHeight.value * 0.5,
 )
 
-// the viewBox is the string representation of the current viewbox
+// the viewBox is the string representation of the current viewBox
 const viewBox = computed(() => {
   const viewBoxX =
     viewportOriginX.value + viewBoxCenterX.value - viewportWidth.value * 0.5
@@ -213,14 +245,36 @@ function wheelHandler(event: WheelEvent) {
   event.preventDefault()
 
   if (event.ctrlKey) {
-    targetZoom.value = targetZoom.value + event.deltaY * deltaScrollScalar.value
+    targetZoom.value = clamp(
+      targetZoom.value + event.deltaY * deltaScrollScalar.value,
+      minZoom.value,
+      props.maxZoom,
+    )
 
     normalizedPointerX.value = event.offsetX / containerWidth.value
     normalizedPointerY.value = event.offsetY / containerHeight.value
   } else {
-    targetPanX.value = targetPanX.value + event.deltaX * deltaPanScalarX.value
+    const updatedTargetPanX =
+      targetPanX.value + event.deltaX * deltaPanScalarX.value
+    const clampedPanX = clamp(updatedTargetPanX, -maxPanX.value, maxPanX.value)
+    targetPanX.value = clampedPanX
 
-    targetPanY.value = targetPanY.value + event.deltaY * deltaPanScalarY.value
+    // const overpanX =
+    //   (updatedTargetPanX - clampedPanX) * props.overscrollElasticity * 0.5
+    // if (Math.abs(overpanX) > 0.05) {
+    //   targetOverpanX.value += overpanX
+    // }
+
+    const updatedTargetPanY =
+      targetPanY.value + event.deltaY * deltaPanScalarY.value
+    const clampedPanY = clamp(updatedTargetPanY, -maxPanY.value, maxPanY.value)
+    targetPanY.value = clampedPanY
+
+    // const overpanY =
+    //   (updatedTargetPanY - clampedPanY) * props.overscrollElasticity * 0.5
+    // if (Math.abs(overpanY) > 0.05) {
+    //   targetOverpanY.value += overpanY
+    // }
   }
 }
 </script>
